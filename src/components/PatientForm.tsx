@@ -50,6 +50,10 @@ const PatientForm: React.FC<PatientFormProps> = ({ patientInfo, setPatientInfo }
     }
   };
 
+  const handleBlur = () => {
+    addCondition(currentCondition);
+  };
+
   return (
     <div className="bg-gradient-to-r from-blue-50 to-white p-8 rounded-lg shadow-lg">
       {/* New Header */}
@@ -157,8 +161,9 @@ const PatientForm: React.FC<PatientFormProps> = ({ patientInfo, setPatientInfo }
                     value={currentCondition}
                     onChange={handleChange}
                     onKeyDown={handleKeyDown}
+                    onBlur={handleBlur}
                     className="block w-full px-4 py-3 rounded-xl border-gray-200 focus:border-blue-500 focus:ring focus:ring-blue-200 focus:outline-none transition-shadow duration-200"
-                    placeholder="Type condition and press Enter or comma to add"
+                    placeholder="Type condition and press Enter, comma, or click outside to add"
                   />
                   <div className="absolute right-2">
                     <HelpCircle className="h-4 w-4 text-gray-400" />

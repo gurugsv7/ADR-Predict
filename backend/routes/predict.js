@@ -14,7 +14,7 @@ const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 // Validate medical conditions using Gemini
 const validateMedicalConditions = async (conditions) => {
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
     
     const prompt = `
       You are a medical term validator. For the following medical conditions, determine if each is a valid medical condition.
@@ -380,6 +380,47 @@ const callGoogleAPI = async (patientInfo, drugInfo) => {
   
   throw lastError;
 };
+
+import multer from 'multer';
+const upload = multer();
+
+// Extract text from medicine image using Gemini Vision API
+const extractTextFromImage = async (imageBuffer) => {
+  try {
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    
+    const prompt = "Extract only the medicine name from this image. If multiple medicines are visible, return the most prominent one. Return only the medicine name, nothing else.";
+    
+    const imageParts = [{
+      inlineData: {
+        data: imageBuffer.toString('base64'),
+        mimeType: 'image/jpeg'
+      }
+    }];
+
+    const result = await model.generateContent([prompt, ...imageParts]);
+    const text = result.response.text().trim();
+    return text;
+  } catch (error) {
+    console.error('Error extracting text from image:', error);
+    throw error;
+  }
+};
+
+// Endpoint for extracting text from medicine image
+predictRouter.post('/extract-text', upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No image file provided' });
+    }
+
+    const text = await extractTextFromImage(req.file.buffer);
+    res.json({ text });
+  } catch (error) {
+    console.error('Error processing image:', error);
+    res.status(500).json({ error: 'Failed to process image' });
+  }
+});
 
 predictRouter.post('/', async (req, res) => {
   console.log('Request body:', req.body);
