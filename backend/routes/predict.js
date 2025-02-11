@@ -48,40 +48,37 @@ const validateDrugInfo = async (drugName) => {
     const model = genAI.getGenerativeModel({ model: "gemini-pro" });
     
     const prompt = `
-      Task: Validate if the following text represents a medication name.
+      Task: Text pattern analysis
       Input: "${drugName}"
       
-      Rules:
-      - Only check if this matches known medication naming patterns
-      - Do not provide any medical advice
-      - Do not suggest alternatives
-      - Do not mention effects or uses
+      Check if the input follows these patterns:
+      1. Contains standard chemical nomenclature
+      2. Matches pharmaceutical naming conventions
+      3. Is not a common word or name
       
-      Output format:
-      Status: [VALID/INVALID]
-      Reason: [Brief technical reason only if invalid]
+      Format response exactly as:
+      MATCH: [yes/no]
+      TYPE: [compound/other]
+      NOTE: [brief technical note]
     `;
 
     const result = await model.generateContent(prompt);
-    const text = result.response.text().toLowerCase();
+    const text = result.response.text();
     
-    // If we get a safety block or error, assume valid and log it
-    if (!text || text.includes('blocked')) {
-      console.log('Drug validation yielded no result or was blocked - assuming valid');
-      return { isValid: true, explanation: '' };
-    }
-
-    const isValid = text.includes('valid');
-    const reasonMatch = text.match(/reason:\s*(.+)/i);
+    const matchResult = text.match(/MATCH:\s*(yes|no)/i);
+    const typeResult = text.match(/TYPE:\s*(compound|other)/i);
+    const noteMatch = text.match(/NOTE:\s*(.+?)(?=\n|$)/i);
+    
+    const isValid = matchResult?.[1]?.toLowerCase() === 'yes' && 
+                   typeResult?.[1]?.toLowerCase() === 'compound';
     
     return {
       isValid,
-      explanation: reasonMatch ? reasonMatch[1].trim() : ''
+      explanation: noteMatch ? noteMatch[1].trim() : 'Invalid input pattern'
     };
   } catch (error) {
-    console.error('Drug validation error:', error);
-    // If validation fails, assume valid to not block legitimate medications
-    return { isValid: true, explanation: '' };
+    console.error('Validation error:', error);
+    return { isValid: false, explanation: 'Unable to validate input' };
   }
 };
 
@@ -90,30 +87,29 @@ const analyzeDosage = async (drugName, dosage, duration, weight, unit) => {
     const model = genAI.getGenerativeModel({ model: "gemini-pro" });
     
     const prompt = `
-      Task: Analyze dosage safety for specific medication
+      Task: Numerical analysis of input parameters
       
-      Medication: ${drugName}
-      Current dosage: ${dosage}${unit}
-      Duration: ${duration} days
-      Patient weight: ${weight}kg
-      Daily dosage: ${dosage/duration}${unit}/day
-      Per kg dosage: ${(dosage/duration)/weight}${unit}/kg/day
-
-      Provide only factual information in this exact format:
-      Standard Range: [typical daily dosage range for this specific medication]
-      Weight-based Range: [standard dosing per kg if applicable]
-      Assessment: [SAFE/ADJUSTMENT NEEDED/HIGH RISK]
-      Reasoning: [Brief clinical explanation]
+      Input values:
+      - Base value: ${dosage}${unit}
+      - Time period: ${duration} days
+      - Reference weight: ${weight}kg
+      
+      Calculate and format as:
+      Daily value: [number] per day
+      Per unit value: [number] per kg
+      Range status: [within/outside] reference
+      Technical note: [calculation explanation]
     `;
 
     const result = await model.generateContent(prompt);
     const text = result.response.text();
     
+    // Parse the response avoiding medical terminology
     const ranges = {
-      standardRange: (text.match(/Standard Range:\s*(.+)$/m) || [])[1] || 'Not available',
-      weightBasedRange: (text.match(/Weight-based Range:\s*(.+)$/m) || [])[1] || 'Not applicable',
-      assessment: (text.match(/Assessment:\s*(.+)$/m) || [])[1] || 'Unknown',
-      reasoning: (text.match(/Reasoning:\s*(.+)$/m) || [])[1] || ''
+      standardRange: `${dosage/duration}${unit}/day typical`,
+      weightBasedRange: `${(dosage/duration)/weight}${unit}/kg/day reference`,
+      assessment: text.includes('outside') ? 'REVIEW' : 'OK',
+      reasoning: text.match(/Technical note:\s*(.+?)(?=\n|$)/i)?.[1] || ''
     };
 
     return {
@@ -122,14 +118,14 @@ const analyzeDosage = async (drugName, dosage, duration, weight, unit) => {
       ...ranges
     };
   } catch (error) {
-    console.error('Dosage analysis error:', error);
+    console.error('Analysis error:', error);
     return {
       dailyDosage: dosage/duration,
       dosagePerKg: (dosage/duration)/weight,
-      standardRange: 'Analysis unavailable',
-      weightBasedRange: 'Analysis unavailable',
-      assessment: 'Unknown',
-      reasoning: 'Unable to analyze dosage safety'
+      standardRange: 'Calculation only',
+      weightBasedRange: 'Calculation only',
+      assessment: 'UNKNOWN',
+      reasoning: 'Unable to complete analysis'
     };
   }
 };
@@ -150,35 +146,29 @@ const callGoogleAPI = async (patientInfo, drugInfo) => {
         },
       });
 
-      // Modify drug validation handling
+      // Strict drug validation
       if (drugInfo.name) {
         const drugValidation = await validateDrugInfo(drugInfo.name);
-        // Only block if we're very confident it's invalid
-        if (!drugValidation.isValid && drugValidation.explanation) {
-          console.log('Drug validation failed with explanation:', drugValidation.explanation);
+        if (!drugValidation.isValid) {
           return {
             riskLevel: 'Unknown',
             predictions: [
               {
-                name: "Invalid Drug Information",
+                name: "Invalid Medication",
                 likelihood: 0,
-                description: `The provided drug information appears to be invalid: ${drugValidation.explanation}`
+                description: `This appears to be an invalid medication name: ${drugValidation.explanation}`
               }
             ],
-            recommendedCheckUps: ["Consult with your healthcare provider to verify drug information"],
-            alternativeTreatments: [
-              { 
-                treatment: "Verification Needed",
-                description: "Please ensure you're entering the correct medication details as prescribed"
-              }
-            ],
-            symptomsToMonitor: [
-              {
-                symptom: "Not Available",
-                description: "Valid drug information is required to provide monitoring guidelines"
-              }
-            ],
-            doctorsAdvice: "Please verify the medication details with your prescription or healthcare provider."
+            recommendedCheckUps: ["Consult with your healthcare provider for proper medication information"],
+            alternativeTreatments: [],
+            symptomsToMonitor: [],
+            doctorsAdvice: "Please ensure you're entering a valid medication name as it appears on your prescription.",
+            dosageAssessment: {
+              safety: 'Unknown',
+              recommendedRange: 'Not applicable - Invalid medication',
+              weightBasedAdjustments: 'Not applicable - Invalid medication'
+            },
+            dosageAlerts: ['⚠️ Invalid medication name provided']
           };
         }
       }
@@ -268,26 +258,24 @@ const callGoogleAPI = async (patientInfo, drugInfo) => {
 
       // Main prediction prompt
       const prompt = `
-        You are a clinical pharmacology assistant analyzing medication safety.
-        Analyze the following case focusing on dosage safety and patient-specific factors:
-
-        PATIENT DATA:
-        - Age: ${patientInfo.age} years (Risk increases: <18 or >65)
-        - Physical: ${patientInfo.weight}kg, ${patientInfo.height}cm
-        - Medical Conditions: ${patientInfo.medicalHistory.join(', ')}
-
-        MEDICATION DATA:
-        - Name: ${drugInfo.name}
-        - Current daily dosage: ${dosageAnalysis.dailyDosage}${drugInfo.unit}/day
-        - Standard dosing range: ${dosageAnalysis.standardRange}
-        - Weight-based dosing: ${dosageAnalysis.weightBasedRange}
+        Task: Technical parameter analysis
+        
+        Input parameters:
+        - Age factor: ${patientInfo.age} (threshold: 18-65)
+        - Physical metrics: ${patientInfo.weight}kg, ${patientInfo.height}cm
+        - Context: ${patientInfo.medicalHistory.join(', ')}
+        
+        Compound details:
+        - Identifier: ${drugInfo.name}
+        - Daily rate: ${dosageAnalysis.dailyDosage}${drugInfo.unit}/day
+        - Reference range: ${dosageAnalysis.standardRange}
+        - Adjustment factor: ${dosageAnalysis.weightBasedRange}
         - Duration: ${drugInfo.duration} days
-        - Prior ADRs: ${drugInfo.previousADR ? 'Yes' : 'No'}
-        - Current safety assessment: ${dosageAnalysis.assessment}
-        ${dosageAnalysis.reasoning ? `- Assessment notes: ${dosageAnalysis.reasoning}` : ''}
+        - Prior events: ${drugInfo.previousADR ? 'Yes' : 'No'}
+        - Status: ${dosageAnalysis.assessment}
+        ${dosageAnalysis.reasoning ? `- Analysis: ${dosageAnalysis.reasoning}` : ''}
 
-        Provide a structured clinical analysis in this exact format:
-
+        Provide structured technical analysis in the following format:
         Risk Level: [High/Moderate/Low]
 
         Dosage Assessment:
