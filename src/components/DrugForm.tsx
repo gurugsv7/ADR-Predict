@@ -1,23 +1,11 @@
 import React from 'react';
 import { HelpCircle, AlertCircle } from 'lucide-react';
 
-const drugClasses = [
-  'Antibiotics',
-  'Painkillers',
-  'Antidepressants',
-  'Antihypertensives',
-  'Antidiabetics',
-  'Anticoagulants',
-  'Antihistamines',
-  'Other'
-];
-
 interface DrugFormProps {
   drugInfo: {
     name: string;
     dosage: number;
     unit: string;
-    drugClass: string;
     duration: number;
     previousADR: boolean;
   };
@@ -93,31 +81,6 @@ const DrugForm: React.FC<DrugFormProps> = ({ drugInfo, setDrugInfo }) => {
                 </div>
               </label>
             </div>
-          </div>
-          {/* Updated Drug Class Section */}
-          <div className="border border-gray-300 p-4 rounded-xl">
-            <label className="block text-sm font-medium text-gray-700">
-              Drug Class
-              <div className="relative group">
-                <div className="mt-1">
-                  <input
-                    type="text"
-                    name="drugClass"
-                    value={drugInfo.drugClass}
-                    onChange={handleChange}
-                    required
-                    className="block w-full px-4 py-3 rounded-xl border-gray-200 focus:border-blue-500 focus:ring focus:ring-blue-200 focus:outline-none transition-shadow duration-200"
-                    placeholder="Enter drug class (e.g., Antibiotics, Painkillers)"
-                  />
-                </div>
-                <div className="absolute right-0 top-0 mt-2 mr-2">
-                  <HelpCircle className="h-4 w-4 text-gray-400" />
-                </div>
-                <div className="absolute invisible group-hover:visible opacity-0 group-hover:opacity-100 transition-opacity bg-gray-800 text-white text-xs rounded-lg py-2 px-3 right-0 top-0 mt-8 w-64">
-                  Enter the classification of the drug (e.g., Antibiotics, Painkillers, Antidepressants)
-                </div>
-              </div>
-            </label>
           </div>
           {/* Wrap Duration Section */}
           <div className="border border-gray-300 p-4 rounded-xl">

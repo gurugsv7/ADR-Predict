@@ -42,15 +42,14 @@ const validateMedicalConditions = async (conditions) => {
   }
 };
 
-// Validate drug name and class using Gemini
-const validateDrugInfo = async (drugName, drugClass) => {
+// Validate drug name using Gemini
+const validateDrugInfo = async (drugName) => {
   try {
     const model = genAI.getGenerativeModel({ model: "gemini-pro" });
     
     const prompt = `
       You are a pharmaceutical validator. Determine if this is a valid medication:
       Drug Name: ${drugName}
-      Drug Class: ${drugClass}
       
       Respond in this format:
       Valid: [yes/no]
@@ -80,8 +79,8 @@ const callGoogleAPI = async (patientInfo, drugInfo) => {
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       // First validate drug information
-      if (drugInfo.name && drugInfo.drugClass) {
-        const drugValidation = await validateDrugInfo(drugInfo.name, drugInfo.drugClass);
+      if (drugInfo.name) {
+        const drugValidation = await validateDrugInfo(drugInfo.name);
         if (!drugValidation.isValid) {
           return {
             riskLevel: 'Unknown',
@@ -152,14 +151,14 @@ const callGoogleAPI = async (patientInfo, drugInfo) => {
       });
       
       // Handle missing information cases
-      if (!drugInfo.name || !drugInfo.drugClass) {
+      if (!drugInfo.name) {
         return {
           riskLevel: 'Unknown',
           predictions: [
             {
               name: "Drug Information Required",
               likelihood: 0,
-              description: "Please provide both drug name and classification for prediction."
+              description: "Please provide drug name for prediction."
             }
           ],
           recommendedCheckUps: ["Consult with your healthcare provider to verify drug information"],
@@ -209,7 +208,6 @@ const callGoogleAPI = async (patientInfo, drugInfo) => {
 
         MEDICATION DATA:
         - Name: ${drugInfo.name}
-        - Class: ${drugInfo.drugClass}
         - Dosage: ${drugInfo.dosage}${drugInfo.unit}
         - Duration: ${drugInfo.duration} days
         - Prior ADRs: ${drugInfo.previousADR ? 'Yes' : 'No'}

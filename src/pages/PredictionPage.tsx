@@ -18,7 +18,6 @@ const PredictionPage: React.FC = () => {
     name: '',
     dosage: 0,
     unit: '',
-    drugClass: '',
     duration: 0,
     previousADR: false,
   });
@@ -32,7 +31,7 @@ const PredictionPage: React.FC = () => {
       setError('Please fill in all patient information fields');
       return;
     }
-    if (!drugInfo.name || !drugInfo.dosage || !drugInfo.unit || !drugInfo.drugClass || !drugInfo.duration) {
+    if (!drugInfo.name || !drugInfo.dosage || !drugInfo.unit || !drugInfo.duration) {
       setError('Please fill in all drug information fields');
       return;
     }

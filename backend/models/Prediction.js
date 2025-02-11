@@ -12,7 +12,6 @@ const PredictionSchema = new mongoose.Schema({
     name: { type: String, required: true },
     dosage: { type: Number, required: true },
     unit: { type: String, required: true },
-    drugClass: { type: String, required: true },
     duration: { type: Number, required: true },
     previousADR: { type: Boolean, required: true }
   },
