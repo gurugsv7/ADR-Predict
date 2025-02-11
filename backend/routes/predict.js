@@ -389,7 +389,7 @@ const extractTextFromImage = async (imageBuffer) => {
   try {
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
     
-    const prompt = "Extract only the medicine name from this image. If multiple medicines are visible, return the most prominent one. Return only the medicine name, nothing else.";
+    const prompt = "You are a pharmaceutical text extractor. From this medicine image, extract ONLY the generic medicine name or active ingredient name. Ignore company/brand names, dosage information, and packaging details. If multiple medicines are visible, return only the most prominent medicine's name. Provide just the medicine name without any additional text or explanations.";
     
     const imageParts = [{
       inlineData: {
