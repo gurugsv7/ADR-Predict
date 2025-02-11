@@ -30,44 +30,53 @@ Key information about ADR Predict:
 
 Maintain a professional tone and always clarify that ADR Predict is a tool for healthcare providers to use in their decision-making process.`;
 
-router.post('/chat', async (req, res) => {
+// Store chat instances for each session
+const chatSessions = new Map();
+
+router.post('/', async (req, res) => {
   try {
-    const { message } = req.body;
+    const { message, sessionId = 'default' } = req.body;
+    
+    let chat;
+    if (!chatSessions.has(sessionId)) {
+      const model = genAI.getGenerativeModel({
+        model: "gemini-pro",
+        generationConfig: {
+          temperature: 0.7,
+          topK: 20,
+          topP: 0.8,
+          maxOutputTokens: 250,
+        },
+      });
 
-    const model = genAI.getGenerativeModel({ 
-      model: "gemini-pro",
-      generationConfig: {
-        temperature: 0.7,
-        topK: 20,
-        topP: 0.8,
-        maxOutputTokens: 250,
-      },
-    });
-
-    // Initialize chat with history
-    const chat = model.startChat({
-      history: [
-        {
-          role: "user",
-          parts: [{ text: "You are ADR Predict's AI assistant. Respond as specified in the following system prompt." }]
-        },
-        {
-          role: "model",
-          parts: [{ text: "I understand. I will act as ADR Predict's AI assistant and will not provide medical advice." }]
-        },
-        {
-          role: "user",
-          parts: [{ text: SYSTEM_PROMPT }]
-        },
-        {
-          role: "model",
-          parts: [{ text: "I understand my role completely. I will focus solely on explaining ADR Predict's capabilities while directing all medical questions to healthcare providers." }]
-        }
-      ]
-    });
+      // Initialize chat with history
+      chat = model.startChat({
+        history: [
+          {
+            role: "user",
+            parts: [{ text: "You are ADR Predict's AI assistant. Respond as specified in the following system prompt." }]
+          },
+          {
+            role: "model",
+            parts: [{ text: "I understand. I will act as ADR Predict's AI assistant and will not provide medical advice." }]
+          },
+          {
+            role: "user",
+            parts: [{ text: SYSTEM_PROMPT }]
+          },
+          {
+            role: "model",
+            parts: [{ text: "I understand my role completely. I will focus solely on explaining ADR Predict's capabilities while directing all medical questions to healthcare providers." }]
+          }
+        ]
+      });
+      chatSessions.set(sessionId, chat);
+    } else {
+      chat = chatSessions.get(sessionId);
+    }
 
     // Send user message
-    const result = await chat.sendMessage([{ text: message }]);
+    const result = await chat.sendMessage(message);
     const response = result.response;
 
     if (!response || !response.text()) {

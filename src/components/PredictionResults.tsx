@@ -15,6 +15,12 @@ interface PredictionResultsProps {
     alternativeTreatments: Array<{ treatment: string; description: string }>;
     symptomsToMonitor: Array<{ symptom: string; description: string }>;
     doctorsAdvice: string;
+    dosageAssessment: {
+      safety: string;
+      recommendedRange: string;
+      weightBasedAdjustments: string;
+    };
+    dosageAlerts: string[];
   };
 }
 
@@ -88,6 +94,54 @@ const PredictionResults: React.FC<PredictionResultsProps> = ({ prediction }) => 
                   {riskInfo.description}
                 </p>
               </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Add Dosage Sensitivity Section before Predictions */}
+        <div className="mb-8">
+          <h3 className="text-xl font-semibold text-gray-900 mb-6">Dosage Sensitivity Analysis</h3>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Dosage Assessment Card */}
+            <div className="bg-indigo-50/50 backdrop-blur-sm rounded-xl p-6 border border-indigo-100">
+              <h4 className="text-lg font-semibold text-indigo-900 mb-4">Dosage Assessment</h4>
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-indigo-700">Safety Status:</span>
+                  <span className={`px-3 py-1 rounded-full text-sm font-medium ${
+                    prediction.dosageAssessment.safety?.toLowerCase().includes('safe') ? 'bg-green-100 text-green-700' :
+                    prediction.dosageAssessment.safety?.toLowerCase().includes('high') ? 'bg-red-100 text-red-700' :
+                    'bg-yellow-100 text-yellow-700'
+                  }`}>
+                    {prediction.dosageAssessment.safety || 'Not Assessed'}
+                  </span>
+                </div>
+                <div>
+                  <p className="text-indigo-700 font-medium">Recommended Range:</p>
+                  <p className="text-indigo-600 mt-1">{prediction.dosageAssessment.recommendedRange || 'Not specified'}</p>
+                </div>
+                <div>
+                  <p className="text-indigo-700 font-medium">Weight-based Adjustments:</p>
+                  <p className="text-indigo-600 mt-1">{prediction.dosageAssessment.weightBasedAdjustments || 'No adjustments specified'}</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Dosage Alerts Card */}
+            <div className="bg-orange-50/50 backdrop-blur-sm rounded-xl p-6 border border-orange-100">
+              <h4 className="text-lg font-semibold text-orange-900 mb-4">Dosage Alerts</h4>
+              {prediction.dosageAlerts && prediction.dosageAlerts.length > 0 ? (
+                <ul className="space-y-3">
+                  {prediction.dosageAlerts.map((alert, index) => (
+                    <li key={index} className="flex items-start">
+                      <AlertTriangle className="h-5 w-5 text-orange-500 mr-2 flex-shrink-0 mt-0.5" />
+                      <span className="text-orange-800">{alert}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-orange-700">No dosage alerts reported</p>
+              )}
             </div>
           </div>
         </div>

@@ -14,6 +14,7 @@ const Chatbot: React.FC = () => {
   const [isOpen, setIsOpen] = useState<boolean>(false);
   const [showWelcomeBubble, setShowWelcomeBubble] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [sessionId] = useState<string>(() => `session_${Date.now()}`);
   const latestBotMessageRef = React.useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -37,12 +38,12 @@ const Chatbot: React.FC = () => {
 
   const getAIResponse = async (message: string): Promise<string> => {
     try {
-      const response = await fetch('http://localhost:5000/api/chat/chat', {
+      const response = await fetch('http://localhost:5000/api/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({ message, sessionId }),
       });
 
       if (!response.ok) {

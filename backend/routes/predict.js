@@ -48,28 +48,89 @@ const validateDrugInfo = async (drugName) => {
     const model = genAI.getGenerativeModel({ model: "gemini-pro" });
     
     const prompt = `
-      You are a pharmaceutical validator. Determine if this is a valid medication:
-      Drug Name: ${drugName}
+      Task: Validate if the following text represents a medication name.
+      Input: "${drugName}"
       
-      Respond in this format:
-      Valid: [yes/no]
-      Explanation: [brief explanation if invalid]
+      Rules:
+      - Only check if this matches known medication naming patterns
+      - Do not provide any medical advice
+      - Do not suggest alternatives
+      - Do not mention effects or uses
+      
+      Output format:
+      Status: [VALID/INVALID]
+      Reason: [Brief technical reason only if invalid]
     `;
 
     const result = await model.generateContent(prompt);
     const text = result.response.text().toLowerCase();
     
-    const isValid = text.includes('valid: yes');
-    const explanation = text.split('\n').find(line => line.toLowerCase().includes('explanation:'));
+    // If we get a safety block or error, assume valid and log it
+    if (!text || text.includes('blocked')) {
+      console.log('Drug validation yielded no result or was blocked - assuming valid');
+      return { isValid: true, explanation: '' };
+    }
+
+    const isValid = text.includes('valid');
+    const reasonMatch = text.match(/reason:\s*(.+)/i);
     
     return {
       isValid,
-      explanation: explanation ? explanation.replace(/^explanation:\s*/i, '').trim() : ''
+      explanation: reasonMatch ? reasonMatch[1].trim() : ''
     };
   } catch (error) {
     console.error('Drug validation error:', error);
-    // In case of API error, accept the drug info to avoid blocking the flow
+    // If validation fails, assume valid to not block legitimate medications
     return { isValid: true, explanation: '' };
+  }
+};
+
+const analyzeDosage = async (drugName, dosage, duration, weight, unit) => {
+  try {
+    const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+    
+    const prompt = `
+      Task: Analyze dosage safety for specific medication
+      
+      Medication: ${drugName}
+      Current dosage: ${dosage}${unit}
+      Duration: ${duration} days
+      Patient weight: ${weight}kg
+      Daily dosage: ${dosage/duration}${unit}/day
+      Per kg dosage: ${(dosage/duration)/weight}${unit}/kg/day
+
+      Provide only factual information in this exact format:
+      Standard Range: [typical daily dosage range for this specific medication]
+      Weight-based Range: [standard dosing per kg if applicable]
+      Assessment: [SAFE/ADJUSTMENT NEEDED/HIGH RISK]
+      Reasoning: [Brief clinical explanation]
+    `;
+
+    const result = await model.generateContent(prompt);
+    const text = result.response.text();
+    
+    const ranges = {
+      standardRange: (text.match(/Standard Range:\s*(.+)$/m) || [])[1] || 'Not available',
+      weightBasedRange: (text.match(/Weight-based Range:\s*(.+)$/m) || [])[1] || 'Not applicable',
+      assessment: (text.match(/Assessment:\s*(.+)$/m) || [])[1] || 'Unknown',
+      reasoning: (text.match(/Reasoning:\s*(.+)$/m) || [])[1] || ''
+    };
+
+    return {
+      dailyDosage: dosage/duration,
+      dosagePerKg: (dosage/duration)/weight,
+      ...ranges
+    };
+  } catch (error) {
+    console.error('Dosage analysis error:', error);
+    return {
+      dailyDosage: dosage/duration,
+      dosagePerKg: (dosage/duration)/weight,
+      standardRange: 'Analysis unavailable',
+      weightBasedRange: 'Analysis unavailable',
+      assessment: 'Unknown',
+      reasoning: 'Unable to analyze dosage safety'
+    };
   }
 };
 
@@ -78,10 +139,23 @@ const callGoogleAPI = async (patientInfo, drugInfo) => {
   
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      // First validate drug information
+      // Move model initialization to the beginning of the try block
+      const model = genAI.getGenerativeModel({ 
+        model: "gemini-pro",
+        generationConfig: {
+          temperature: 0.2,
+          topK: 20,
+          topP: 0.8,
+          maxOutputTokens: 1024,
+        },
+      });
+
+      // Modify drug validation handling
       if (drugInfo.name) {
         const drugValidation = await validateDrugInfo(drugInfo.name);
-        if (!drugValidation.isValid) {
+        // Only block if we're very confident it's invalid
+        if (!drugValidation.isValid && drugValidation.explanation) {
+          console.log('Drug validation failed with explanation:', drugValidation.explanation);
           return {
             riskLevel: 'Unknown',
             predictions: [
@@ -140,16 +214,15 @@ const callGoogleAPI = async (patientInfo, drugInfo) => {
         }
       }
 
-      const model = genAI.getGenerativeModel({ 
-        model: "gemini-pro",
-        generationConfig: {
-          temperature: 0.2,
-          topK: 20,
-          topP: 0.8,
-          maxOutputTokens: 1024,
-        },
-      });
-      
+      // Update dosage analysis to use new function
+      const dosageAnalysis = await analyzeDosage(
+        drugInfo.name,
+        parseFloat(drugInfo.dosage),
+        parseInt(drugInfo.duration),
+        parseFloat(patientInfo.weight),
+        drugInfo.unit
+      );
+
       // Handle missing information cases
       if (!drugInfo.name) {
         return {
@@ -195,25 +268,35 @@ const callGoogleAPI = async (patientInfo, drugInfo) => {
 
       // Main prediction prompt
       const prompt = `
-        You are a deterministic medical analysis tool. For consistent results, follow these exact rules:
-
-        Analyze the following case using standardized criteria. Consider ALL medical conditions together
-        when determining risk levels, reactions, and alternative treatments:
+        You are a clinical pharmacology assistant analyzing medication safety.
+        Analyze the following case focusing on dosage safety and patient-specific factors:
 
         PATIENT DATA:
         - Age: ${patientInfo.age} years (Risk increases: <18 or >65)
         - Physical: ${patientInfo.weight}kg, ${patientInfo.height}cm
         - Medical Conditions: ${patientInfo.medicalHistory.join(', ')}
-        Note: Consider interactions between all medical conditions when analyzing
 
         MEDICATION DATA:
         - Name: ${drugInfo.name}
-        - Dosage: ${drugInfo.dosage}${drugInfo.unit}
+        - Current daily dosage: ${dosageAnalysis.dailyDosage}${drugInfo.unit}/day
+        - Standard dosing range: ${dosageAnalysis.standardRange}
+        - Weight-based dosing: ${dosageAnalysis.weightBasedRange}
         - Duration: ${drugInfo.duration} days
         - Prior ADRs: ${drugInfo.previousADR ? 'Yes' : 'No'}
+        - Current safety assessment: ${dosageAnalysis.assessment}
+        ${dosageAnalysis.reasoning ? `- Assessment notes: ${dosageAnalysis.reasoning}` : ''}
 
-        PROVIDE YOUR RESPONSE IN THIS EXACT FORMAT:
+        Provide a structured clinical analysis in this exact format:
+
         Risk Level: [High/Moderate/Low]
+
+        Dosage Assessment:
+        - Current dosage safety: [Safe/Requires Adjustment/High Risk]
+        - Recommended dosage range: [Specify range]
+        - Weight-based adjustments: [If needed]
+        
+        Dosage Alerts:
+        [List any critical dosage concerns or overdose risks]
 
         Common Reactions for Study:
         - [Effect]: [XX]% - [Description]
@@ -221,9 +304,9 @@ const callGoogleAPI = async (patientInfo, drugInfo) => {
         - [Effect]: [XX]% - [Description]
 
         Alternative Treatments:
-        - [Treatment 1]: [Brief description and benefits]
-        - [Treatment 2]: [Brief description and benefits]
-        - [Treatment 3]: [Brief description and benefits]
+        - [Treatment 1]: [Brief description and dose range]
+        - [Treatment 2]: [Brief description and dose range]
+        - [Treatment 3]: [Brief description and dose range]
 
         Recommended Check-Ups:
         - [Check-up 1]
@@ -236,13 +319,9 @@ const callGoogleAPI = async (patientInfo, drugInfo) => {
         - [Symptom 3]: [Brief description]
 
         Doctor's Advice:
-        [Concise medical recommendations and precautions]
+        [Clinical recommendations and dosage adjustment advice]
 
-        If the drug is not in common use or its interactions are not well documented, emphasize the need
-        for careful monitoring and consultation with healthcare providers.
-
-        Use consistent percentages for similar cases.
-        This is for educational purposes only.
+        This analysis is for educational purposes only.
       `;
 
       console.log('Sending prompt to Gemini:', prompt);
@@ -298,12 +377,20 @@ const callGoogleAPI = async (patientInfo, drugInfo) => {
         alternativeTreatments: [],
         symptomsToMonitor: [],
         doctorsAdvice: '',
+        dosageAssessment: {
+          safety: 'Unknown',
+          recommendedRange: '',
+          weightBasedAdjustments: ''
+        },
+        dosageAlerts: [],
       };
 
       let inCheckUps = false;
       let inAlternatives = false;
       let inSymptoms = false;
       let inAdvice = false;
+      let inDosageAssessment = false;
+      let inDosageAlerts = false;
 
       for (const line of lines) {
         if (line.includes('Recommended Check-Ups:')) {
@@ -311,6 +398,8 @@ const callGoogleAPI = async (patientInfo, drugInfo) => {
           inAlternatives = false;
           inSymptoms = false;
           inAdvice = false;
+          inDosageAssessment = false;
+          inDosageAlerts = false;
           continue;
         }
         if (line.includes('Alternative Treatments:')) {
@@ -318,6 +407,8 @@ const callGoogleAPI = async (patientInfo, drugInfo) => {
           inAlternatives = true;
           inSymptoms = false;
           inAdvice = false;
+          inDosageAssessment = false;
+          inDosageAlerts = false;
           continue;
         }
         if (line.includes('Symptoms to Monitor:')) {
@@ -325,6 +416,8 @@ const callGoogleAPI = async (patientInfo, drugInfo) => {
           inAlternatives = false;
           inSymptoms = true;
           inAdvice = false;
+          inDosageAssessment = false;
+          inDosageAlerts = false;
           continue;
         }
         if (line.includes("Doctor's Advice:")) {
@@ -332,6 +425,26 @@ const callGoogleAPI = async (patientInfo, drugInfo) => {
           inAlternatives = false;
           inSymptoms = false;
           inAdvice = true;
+          inDosageAssessment = false;
+          inDosageAlerts = false;
+          continue;
+        }
+        if (line.includes('Dosage Assessment:')) {
+          inCheckUps = false;
+          inAlternatives = false;
+          inSymptoms = false;
+          inAdvice = false;
+          inDosageAssessment = true;
+          inDosageAlerts = false;
+          continue;
+        }
+        if (line.includes('Dosage Alerts:')) {
+          inCheckUps = false;
+          inAlternatives = false;
+          inSymptoms = false;
+          inAdvice = false;
+          inDosageAssessment = false;
+          inDosageAlerts = true;
           continue;
         }
 
@@ -349,6 +462,37 @@ const callGoogleAPI = async (patientInfo, drugInfo) => {
         if (inAdvice && line.trim() && !line.includes("Doctor's Advice:")) {
           parsedResult.doctorsAdvice += line.trim() + ' ';
         }
+        if (inDosageAssessment && line.trim().startsWith('-')) {
+          const [key, value] = line.trim().substring(1).split(':').map(s => s.trim());
+          if (key.includes('safety')) parsedResult.dosageAssessment.safety = value;
+          if (key.includes('range')) parsedResult.dosageAssessment.recommendedRange = value;
+          if (key.includes('weight')) parsedResult.dosageAssessment.weightBasedAdjustments = value;
+        }
+        if (inDosageAlerts && line.trim().startsWith('-')) {
+          parsedResult.dosageAlerts.push(line.trim().substring(1).trim());
+        }
+      }
+
+      // Add urgent alert for high dosages
+      if (dosageAnalysis.dailyDosage > 0) {
+        const isHighDosage = dosageAnalysis.dosagePerKg > (drugInfo.unit === 'mg' ? 50 : 0.05); // Example threshold
+        if (isHighDosage) {
+          parsedResult.dosageAlerts.unshift('⚠️ URGENT: Potentially excessive dosage detected. Immediate medical review recommended.');
+          parsedResult.riskLevel = 'High';
+        }
+      }
+
+      // Update dosage assessment in parsed result
+      parsedResult.dosageAssessment = {
+        safety: dosageAnalysis.assessment,
+        recommendedRange: dosageAnalysis.standardRange,
+        weightBasedAdjustments: dosageAnalysis.weightBasedRange
+      };
+
+      // Add specific alert if dosage analysis indicates high risk
+      if (dosageAnalysis.assessment.toLowerCase().includes('high risk')) {
+        parsedResult.dosageAlerts.unshift(`⚠️ URGENT: ${dosageAnalysis.reasoning}`);
+        parsedResult.riskLevel = 'High';
       }
 
       return parsedResult;
