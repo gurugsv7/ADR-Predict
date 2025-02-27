@@ -1,10 +1,13 @@
 import express from 'express';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import dotenv from 'dotenv';
+import multer from 'multer';
+import fs from 'fs';
 
 dotenv.config();
 
 const router = express.Router();
+const upload = multer();
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
@@ -33,64 +36,65 @@ Maintain a professional tone and always clarify that ADR Predict is a tool for h
 // Store chat instances for each session
 const chatSessions = new Map();
 
-router.post('/', async (req, res) => {
+router.post('/', upload.single('image'), async (req, res) => {
   try {
     const { message, sessionId = 'default' } = req.body;
-    
-    let chat;
-    if (!chatSessions.has(sessionId)) {
-      const model = genAI.getGenerativeModel({
-        model: "gemini-pro",
-        generationConfig: {
-          temperature: 0.7,
-          topK: 20,
-          topP: 0.8,
-          maxOutputTokens: 250,
-        },
-      });
+    const image = req.file;
 
-      // Initialize chat with history
-      chat = model.startChat({
-        history: [
-          {
-            role: "user",
-            parts: [{ text: "You are ADR Predict's AI assistant. Respond as specified in the following system prompt." }]
-          },
-          {
-            role: "model",
-            parts: [{ text: "I understand. I will act as ADR Predict's AI assistant and will not provide medical advice." }]
-          },
-          {
-            role: "user",
-            parts: [{ text: SYSTEM_PROMPT }]
-          },
-          {
-            role: "model",
-            parts: [{ text: "I understand my role completely. I will focus solely on explaining ADR Predict's capabilities while directing all medical questions to healthcare providers." }]
-          }
-        ]
+    // Create initial message parts with the text
+    const messageParts = [{ text: message || '' }];
+
+    // If an image is uploaded, add it to the message parts
+    if (image) {
+      messageParts.push({
+        inlineData: {
+          data: image.buffer.toString('base64'),
+          mimeType: image.mimetype
+        }
       });
-      chatSessions.set(sessionId, chat);
-    } else {
-      chat = chatSessions.get(sessionId);
     }
 
-    // Send user message
-    const result = await chat.sendMessage(message);
+    // Use Gemini 1.5 Flash for both text and image processing
+    const model = genAI.getGenerativeModel({
+      model: "gemini-1.5-flash",
+      generationConfig: {
+        temperature: 0.7,
+        topK: 20,
+        topP: 0.8,
+        maxOutputTokens: 250,
+      },
+    });
+
+    // Add system prompt to message parts
+    messageParts.unshift({ text: SYSTEM_PROMPT + "\n\n" });
+
+    // For images, add specific guidance
+    if (image) {
+      messageParts.unshift({
+        text: "When analyzing images related to medications or medical documents, focus on:\n" +
+              "1. Identifying visible drug names or medical terms\n" +
+              "2. Describing how ADR Predict can help analyze such medications\n" +
+              "3. Emphasizing that final interpretations should be done by healthcare providers\n" +
+              "4. NOT providing specific medical advice about the medication\n\n"
+      });
+    }
+
+    // Generate response
+    const result = await model.generateContent(messageParts);
     const response = result.response;
 
     if (!response || !response.text()) {
       throw new Error('Empty response from Gemini API');
     }
 
-    res.json({ 
+    res.json({
       response: response.text(),
       confidence: 0.95
     });
 
   } catch (error) {
     console.error('Chat API Error:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       response: "I'm having trouble processing your request. Please try again.",
       confidence: 0.3
     });

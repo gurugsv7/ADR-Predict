@@ -1,10 +1,17 @@
 import express from 'express';
 import { Prediction } from '../models/Prediction.js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import OpenAI from 'openai';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 export const predictRouter = express.Router();
 
-const genAI = new GoogleGenerativeAI('AIzaSyCBuKB0mRZP8pnKFdEgN-taYDpbRLxzxsc');
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
 
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 1000; // 1 second
@@ -45,7 +52,7 @@ const validateMedicalConditions = async (conditions) => {
 // Validate drug name using Gemini
 const validateDrugInfo = async (drugName) => {
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
     
     const prompt = `
       Task: Text pattern analysis
@@ -84,7 +91,7 @@ const validateDrugInfo = async (drugName) => {
 
 const analyzeDosage = async (drugName, dosage, duration, weight, unit) => {
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
     
     const prompt = `
       Task: Numerical analysis of input parameters
@@ -104,18 +111,35 @@ const analyzeDosage = async (drugName, dosage, duration, weight, unit) => {
     const result = await model.generateContent(prompt);
     const text = result.response.text();
     
-    // Parse the response avoiding medical terminology
+    const dailyDosage = Number((dosage/duration).toFixed(2));
+    const dosagePerKg = Number((dailyDosage/weight).toFixed(2));
+
+    // Define dosage thresholds based on unit type
+    const thresholds = {
+      mg: { daily: 2000, perKg: 50 }, // Example thresholds for mg
+      g: { daily: 2, perKg: 0.05 },    // Example thresholds for g
+      ml: { daily: 100, perKg: 2.5 },  // Example thresholds for ml
+      mcg: { daily: 1000, perKg: 25 }  // Example thresholds for mcg
+    };
+
+    // Determine if dosage is high based on unit-specific thresholds
+    const threshold = thresholds[unit.toLowerCase()] || thresholds.mg;
+    const isHighDosage = dailyDosage > threshold.daily || dosagePerKg > threshold.perKg;
+
+    // Parse the response and determine assessment
     const ranges = {
-      standardRange: `${dosage/duration}${unit}/day typical`,
-      weightBasedRange: `${(dosage/duration)/weight}${unit}/kg/day reference`,
-      assessment: text.includes('outside') ? 'REVIEW' : 'OK',
-      reasoning: text.match(/Technical note:\s*(.+?)(?=\n|$)/i)?.[1] || ''
+      standardRange: `${dailyDosage}${unit}/day typical`,
+      weightBasedRange: `${dosagePerKg}${unit}/kg/day reference`,
+      assessment: isHighDosage ? 'HIGH RISK' : text.includes('outside') ? 'REVIEW' : 'OK',
+      reasoning: text.match(/Technical note:\s*(.+?)(?=\n|$)/i)?.[1] ||
+                (isHighDosage ? `Daily dosage (${dailyDosage}${unit}) or per kg dosage (${dosagePerKg}${unit}/kg) exceeds recommended limits` : '')
     };
 
     return {
-      dailyDosage: dosage/duration,
-      dosagePerKg: (dosage/duration)/weight,
-      ...ranges
+      dailyDosage,
+      dosagePerKg,
+      ...ranges,
+      isHighDosage
     };
   } catch (error) {
     console.error('Analysis error:', error);
@@ -130,368 +154,359 @@ const analyzeDosage = async (drugName, dosage, duration, weight, unit) => {
   }
 };
 
-const callGoogleAPI = async (patientInfo, drugInfo) => {
-  let lastError;
-  
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      // Move model initialization to the beginning of the try block
-      const model = genAI.getGenerativeModel({ 
-        model: "gemini-pro",
-        generationConfig: {
-          temperature: 0.2,
-          topK: 20,
-          topP: 0.8,
-          maxOutputTokens: 1024,
+const predictWithGPT = async (patientInfo, drugInfo, dosageAnalysis) => {
+  try {
+    const prompt = `
+      You are an advanced ADR (Adverse Drug Reaction) prediction system. Using the provided patient data and medication details, analyze potential reactions and provide a comprehensive safety assessment.
+
+      Patient Profile:
+      - Age: ${patientInfo.age} years
+      - Weight: ${patientInfo.weight}kg
+      - Height: ${patientInfo.height}cm
+      - Medical History: ${patientInfo.medicalHistory.join(', ')}
+      
+      Medication Details:
+      - Drug: ${drugInfo.name}
+      - Dosage: ${drugInfo.dosage}${drugInfo.unit}
+      - Duration: ${drugInfo.duration} days
+      - Prior ADR History: ${drugInfo.previousADR ? 'Yes' : 'No'}
+
+      Current Analysis:
+      - Daily Dose: ${dosageAnalysis.dailyDosage}${drugInfo.unit}/day
+      - Weight-based Dose: ${dosageAnalysis.dosagePerKg}${drugInfo.unit}/kg/day
+      - Safety Assessment: ${dosageAnalysis.assessment}
+      ${dosageAnalysis.reasoning ? `- Clinical Notes: ${dosageAnalysis.reasoning}` : ''}
+
+      Required Format:
+
+      1. Risk Level Assessment:
+      Specify as [High/Moderate/Low] with brief justification
+
+      2. Specific ADR Predictions:
+      List each predicted reaction in format:
+      - [Reaction Name]: [X]% - [Brief explanation of why]
+      (Minimum 3 predictions, each with percentage and rationale)
+
+      3. Required Monitoring Protocol:
+      List specific checkups and tests, each with rationale:
+      - [Checkup/Test] - [Why it's needed]
+      (Minimum 4 specific monitoring requirements)
+
+      4. Alternative Considerations:
+      [Only if risk level is Moderate or High]
+
+      5. Critical Symptoms for Monitoring:
+      [List with descriptions]
+
+      6. Clinical Guidelines:
+      [Specific recommendations]
+
+      Note: Ensure all predictions and recommendations are evidence-based and specific to this patient's profile, medical history, and medication details. Focus on clinical accuracy and actionable insights.
+
+      Note: All predictions should be evidence-based while maintaining patient safety as the top priority.
+    `;
+
+    const completion = await openai.chat.completions.create({
+      model: "gpt-3.5-turbo",
+      messages: [
+        {
+          role: "system",
+          content: "You are an advanced Adverse Drug reaction prediction system that analyzes patient data and medication details to predict potential adverse drug reactions. Focus on evidence-based predictions and patient safety."
         },
-      });
-
-      // Strict drug validation
-      if (drugInfo.name) {
-        const drugValidation = await validateDrugInfo(drugInfo.name);
-        if (!drugValidation.isValid) {
-          return {
-            riskLevel: 'Unknown',
-            predictions: [
-              {
-                name: "Invalid Medication",
-                likelihood: 0,
-                description: `This appears to be an invalid medication name: ${drugValidation.explanation}`
-              }
-            ],
-            recommendedCheckUps: ["Consult with your healthcare provider for proper medication information"],
-            alternativeTreatments: [],
-            symptomsToMonitor: [],
-            doctorsAdvice: "Please ensure you're entering a valid medication name as it appears on your prescription.",
-            dosageAssessment: {
-              safety: 'Unknown',
-              recommendedRange: 'Not applicable - Invalid medication',
-              weightBasedAdjustments: 'Not applicable - Invalid medication'
-            },
-            dosageAlerts: ['⚠️ Invalid medication name provided']
-          };
+        {
+          role: "user",
+          content: prompt
         }
-      }
+      ],
+      temperature: 0.1, // Lower temperature for more consistent, focused responses
+      max_tokens: 2048, // Increased token limit for more detailed responses
+      presence_penalty: 0.1, // Slight penalty to encourage specificity
+      frequency_penalty: 0.1 // Slight penalty to encourage diverse predictions
+    });
 
-      // Then validate medical conditions if provided
-      if (patientInfo.medicalHistory && patientInfo.medicalHistory.length > 0) {
-        const medicalValidation = await validateMedicalConditions(patientInfo.medicalHistory);
-        if (!medicalValidation.isValid) {
-          return {
-            riskLevel: 'Unknown',
-            predictions: [
-              {
-                name: "Medical History Needs Review",
-                likelihood: 0,
-                description: medicalValidation.explanation || "Some medical conditions need verification"
-              }
-            ],
-            recommendedCheckUps: ["Consult with your healthcare provider to verify your medical conditions"],
-            alternativeTreatments: [
-              {
-                treatment: "Medical History Review",
-                description: "Please ensure medical conditions are entered accurately from your health records"
-              }
-            ],
-            symptomsToMonitor: [
-              {
-                symptom: "Not Available",
-                description: "Valid medical history is required for proper monitoring guidelines"
-              }
-            ],
-            doctorsAdvice: "Please verify your medical conditions with your healthcare provider or medical records."
-          };
-        }
-      }
+    const response = completion.choices[0].message.content;
 
-      // Update dosage analysis to use new function
-      const dosageAnalysis = await analyzeDosage(
-        drugInfo.name,
-        parseFloat(drugInfo.dosage),
-        parseInt(drugInfo.duration),
-        parseFloat(patientInfo.weight),
-        drugInfo.unit
-      );
+    // Parse GPT response into structured format
+    const riskLevel = response.match(/Risk Level.*?(?:High|Moderate|Low)/i)?.[0].split(/:\s*/)[1] || 'Moderate';
+    
+    // Parse the entire response
+    const sections = response.split(/\n\d+\.|(?=Risk Level)/i);
+    
+    // Extract predictions
+    const predictions = [];
+    let predictionSection = sections.find(s =>
+      /specific adr|potential reactions|likely reactions|predicted effects/i.test(s)
+    ) || '';
 
-      // Handle missing information cases
-      if (!drugInfo.name) {
-        return {
-          riskLevel: 'Unknown',
-          predictions: [
-            {
-              name: "Drug Information Required",
-              likelihood: 0,
-              description: "Please provide drug name for prediction."
-            }
-          ],
-          recommendedCheckUps: ["Consult with your healthcare provider to verify drug information"],
-          alternativeTreatments: [],
-          symptomsToMonitor: [],
-          doctorsAdvice: "Please provide complete drug information for accurate assessment."
-        };
-      }
+    // First try to extract structured predictions
+    const predictionLines = predictionSection
+      .split('\n')
+      .filter(line => line.trim() && /[-•\d]/.test(line));
 
-      if (!patientInfo.medicalHistory || patientInfo.medicalHistory.length === 0) {
-        return {
-          riskLevel: 'Caution',
-          predictions: [
-            {
-              name: "Limited Medical History",
-              likelihood: 50,
-              description: "Predictions may be less accurate without complete medical history."
-            }
-          ],
-          recommendedCheckUps: [
-            "Complete medical history assessment",
-            "Initial consultation to document medical background"
-          ],
-          alternativeTreatments: [],
-          symptomsToMonitor: [
-            {
-              symptom: "General Health",
-              description: "Monitor any unusual reactions or symptoms"
-            }
-          ],
-          doctorsAdvice: "Please provide your medical history for more accurate assessment."
-        };
-      }
-
-      // Main prediction prompt
-      const prompt = `
-        Task: Technical parameter analysis
-        
-        Input parameters:
-        - Age factor: ${patientInfo.age} (threshold: 18-65)
-        - Physical metrics: ${patientInfo.weight}kg, ${patientInfo.height}cm
-        - Context: ${patientInfo.medicalHistory.join(', ')}
-        
-        Compound details:
-        - Identifier: ${drugInfo.name}
-        - Daily rate: ${dosageAnalysis.dailyDosage}${drugInfo.unit}/day
-        - Reference range: ${dosageAnalysis.standardRange}
-        - Adjustment factor: ${dosageAnalysis.weightBasedRange}
-        - Duration: ${drugInfo.duration} days
-        - Prior events: ${drugInfo.previousADR ? 'Yes' : 'No'}
-        - Status: ${dosageAnalysis.assessment}
-        ${dosageAnalysis.reasoning ? `- Analysis: ${dosageAnalysis.reasoning}` : ''}
-
-        Provide structured technical analysis in the following format:
-        Risk Level: [High/Moderate/Low]
-
-        Dosage Assessment:
-        - Current dosage safety: [Safe/Requires Adjustment/High Risk]
-        - Recommended dosage range: [Specify range]
-        - Weight-based adjustments: [If needed]
-        
-        Dosage Alerts:
-        [List any critical dosage concerns or overdose risks]
-
-        Common Reactions for Study:
-        - [Effect]: [XX]% - [Description]
-        - [Effect]: [XX]% - [Description]
-        - [Effect]: [XX]% - [Description]
-
-        Alternative Treatments:
-        - [Treatment 1]: [Brief description and dose range]
-        - [Treatment 2]: [Brief description and dose range]
-        - [Treatment 3]: [Brief description and dose range]
-
-        Recommended Check-Ups:
-        - [Check-up 1]
-        - [Check-up 2]
-        - [Check-up 3]
-
-        Symptoms to Monitor:
-        - [Symptom 1]: [Brief description]
-        - [Symptom 2]: [Brief description]
-        - [Symptom 3]: [Brief description]
-
-        Doctor's Advice:
-        [Clinical recommendations and dosage adjustment advice]
-
-        This analysis is for educational purposes only.
-      `;
-
-      console.log('Sending prompt to Gemini:', prompt);
-
-      const result = await model.generateContent(prompt);
-      
-      if (!result || !result.response) {
-        throw new Error('Empty response from Gemini API');
-      }
-
-      const text = result.response.text();
-      if (!text) {
-        throw new Error('Empty text in Gemini response');
-      }
-
-      console.log('Raw Gemini response:', text);
-
-      const lines = text.split('\n').filter(line => line.trim());
-      
-      const riskLine = lines.find(line => line.toLowerCase().includes('risk level'));
-      const riskLevel = riskLine ? 
-        (riskLine.toLowerCase().includes('high') ? 'High' :
-         riskLine.toLowerCase().includes('moderate') ? 'Moderate' : 'Low')
-        : 'Moderate';
-
-      const predictions = [];
-      const reactionPatterns = [
-        /[-•]\s*([^:]+):\s*(\d+)%\s*[-–]\s*(.*)/,
-        /[-•]\s*([^:]+):\s*(\d+)%\s*(.*)/,
-        /[-•]\s*([^:]+)\s*[-–]\s*(\d+)%:\s*(.*)/
+    for (const line of predictionLines) {
+      // Try different formats of prediction lines
+      const patterns = [
+        // "Headache: 70% - Description"
+        /([^:]+):\s*(\d+)%\s*(?:-|\s–\s)*\s*(.*)/i,
+        // "70% likelihood of headache - Description"
+        /(\d+)%\s*(?:chance|risk|likelihood)\s*of\s*([^-\n]+)(?:-|\s–\s)*\s*(.*)/i,
+        // "- Headache (70%) - Description"
+        /[-•]\s*([^(]+)\s*\((\d+)%\)\s*(?:-|\s–\s)*\s*(.*)/i,
+        // "Headache - 70% - Description"
+        /([^-]+)\s*-\s*(\d+)%\s*(?:-|\s–\s)*\s*(.*)/i
       ];
 
-      for (const line of lines) {
-        if (line.trim().startsWith('-') || line.trim().startsWith('•')) {
-          for (const pattern of reactionPatterns) {
-            const match = line.match(pattern);
-            if (match) {
-              predictions.push({
-                name: match[1].trim(),
-                likelihood: parseFloat(match[2]),
-                description: match[3].trim()
-              });
-              break;
-            }
+      for (const pattern of patterns) {
+        const match = line.match(pattern);
+        if (match) {
+          let name, likelihood, description;
+          if (pattern === patterns[0]) {
+            [, name, likelihood, description] = match;
+          } else if (pattern === patterns[1]) {
+            [, likelihood, name, description] = match;
+          } else if (pattern === patterns[2]) {
+            [, name, likelihood, description] = match;
+          } else {
+            [, name, likelihood, description] = match;
           }
+
+          predictions.push({
+            name: name.trim(),
+            likelihood: parseInt(likelihood),
+            description: description.trim() || `${likelihood}% likelihood based on patient profile and medication interactions`
+          });
+          break;
         }
       }
+    }
 
-      const parsedResult = {
-        riskLevel,
-        predictions: predictions.length > 0 ? predictions : [],
-        recommendedCheckUps: [],
-        alternativeTreatments: [],
-        symptomsToMonitor: [],
-        doctorsAdvice: '',
-        dosageAssessment: {
-          safety: 'Unknown',
-          recommendedRange: '',
-          weightBasedAdjustments: ''
-        },
-        dosageAlerts: [],
-      };
+    // Extract monitoring recommendations
+    const checkUpsSection = sections.find(s =>
+      /monitoring|check[- ]?ups?|recommended monitoring/i.test(s)
+    ) || '';
 
-      let inCheckUps = false;
-      let inAlternatives = false;
-      let inSymptoms = false;
-      let inAdvice = false;
-      let inDosageAssessment = false;
-      let inDosageAlerts = false;
+    const recommendedCheckUps = checkUpsSection
+      .split('\n')
+      .filter(line => line.trim() && /[-•\d]/.test(line))
+      .map(line => {
+        // Remove leading markers and clean up
+        return line
+          .replace(/^[\d\s.•-]+/, '')
+          .replace(/^[:\s]+/, '')
+          .trim();
+      })
+      .filter(line => line.length > 0);
 
-      for (const line of lines) {
-        if (line.includes('Recommended Check-Ups:')) {
-          inCheckUps = true;
-          inAlternatives = false;
-          inSymptoms = false;
-          inAdvice = false;
-          inDosageAssessment = false;
-          inDosageAlerts = false;
-          continue;
-        }
-        if (line.includes('Alternative Treatments:')) {
-          inCheckUps = false;
-          inAlternatives = true;
-          inSymptoms = false;
-          inAdvice = false;
-          inDosageAssessment = false;
-          inDosageAlerts = false;
-          continue;
-        }
-        if (line.includes('Symptoms to Monitor:')) {
-          inCheckUps = false;
-          inAlternatives = false;
-          inSymptoms = true;
-          inAdvice = false;
-          inDosageAssessment = false;
-          inDosageAlerts = false;
-          continue;
-        }
-        if (line.includes("Doctor's Advice:")) {
-          inCheckUps = false;
-          inAlternatives = false;
-          inSymptoms = false;
-          inAdvice = true;
-          inDosageAssessment = false;
-          inDosageAlerts = false;
-          continue;
-        }
-        if (line.includes('Dosage Assessment:')) {
-          inCheckUps = false;
-          inAlternatives = false;
-          inSymptoms = false;
-          inAdvice = false;
-          inDosageAssessment = true;
-          inDosageAlerts = false;
-          continue;
-        }
-        if (line.includes('Dosage Alerts:')) {
-          inCheckUps = false;
-          inAlternatives = false;
-          inSymptoms = false;
-          inAdvice = false;
-          inDosageAssessment = false;
-          inDosageAlerts = true;
-          continue;
-        }
-
-        if (inCheckUps && line.trim().startsWith('-')) {
-          parsedResult.recommendedCheckUps.push(line.trim().substring(1).trim());
-        }
-        if (inAlternatives && line.trim().startsWith('-')) {
-          const [treatment, description] = line.trim().substring(1).split(':').map(s => s.trim());
-          parsedResult.alternativeTreatments.push({ treatment, description });
-        }
-        if (inSymptoms && line.trim().startsWith('-')) {
-          const [symptom, description] = line.trim().substring(1).split(':').map(s => s.trim());
-          parsedResult.symptomsToMonitor.push({ symptom, description });
-        }
-        if (inAdvice && line.trim() && !line.includes("Doctor's Advice:")) {
-          parsedResult.doctorsAdvice += line.trim() + ' ';
-        }
-        if (inDosageAssessment && line.trim().startsWith('-')) {
-          const [key, value] = line.trim().substring(1).split(':').map(s => s.trim());
-          if (key.includes('safety')) parsedResult.dosageAssessment.safety = value;
-          if (key.includes('range')) parsedResult.dosageAssessment.recommendedRange = value;
-          if (key.includes('weight')) parsedResult.dosageAssessment.weightBasedAdjustments = value;
-        }
-        if (inDosageAlerts && line.trim().startsWith('-')) {
-          parsedResult.dosageAlerts.push(line.trim().substring(1).trim());
+    // Extract alternative treatments
+    const alternativeTreatments = [];
+    const altMatch = response.match(/alternative[^]*?:([^]*?)(?:\n\n|\n[A-Z]|$)/i)?.[1];
+    if (altMatch) {
+      const altLines = altMatch.split('\n').filter(line => line.trim());
+      for (const line of altLines) {
+        const [treatment, ...desc] = line.replace(/^-\s*/, '').split(/:\s*/);
+        if (treatment) {
+          alternativeTreatments.push({
+            treatment: treatment.trim(),
+            description: desc.join(':').trim() || 'Alternative option to consider'
+          });
         }
       }
+    }
 
-      // Add urgent alert for high dosages
-      if (dosageAnalysis.dailyDosage > 0) {
-        const isHighDosage = dosageAnalysis.dosagePerKg > (drugInfo.unit === 'mg' ? 50 : 0.05); // Example threshold
-        if (isHighDosage) {
-          parsedResult.dosageAlerts.unshift('⚠️ URGENT: Potentially excessive dosage detected. Immediate medical review recommended.');
-          parsedResult.riskLevel = 'High';
+    // Extract symptoms to monitor
+    const symptomsToMonitor = [];
+    const symptomsMatch = response.match(/symptoms[^]*?:([^]*?)(?:\n\n|\n[A-Z]|$)/i)?.[1];
+    if (symptomsMatch) {
+      const symptomLines = symptomsMatch.split('\n').filter(line => line.trim());
+      for (const line of symptomLines) {
+        const [symptom, ...desc] = line.replace(/^-\s*/, '').split(/:\s*/);
+        if (symptom) {
+          symptomsToMonitor.push({
+            symptom: symptom.trim(),
+            description: desc.join(':').trim() || 'Monitor for changes'
+          });
         }
       }
+    }
 
-      // Update dosage assessment in parsed result
-      parsedResult.dosageAssessment = {
+    // Extract doctor's advice from clinical recommendations
+    const doctorsAdvice = response
+      .match(/clinical[^]*?:([^]*?)(?:\n\n|\n[A-Z]|$)/i)?.[1]
+      ?.split('\n')
+      .filter(line => line.trim())
+      .map(line => line.replace(/^-\s*/, '').trim())
+      .join(' ') || 'Monitor patient closely and adjust treatment as needed.';
+
+    // Verify we have valid predictions and monitoring recommendations
+    if (predictions.length === 0 || recommendedCheckUps.length === 0) {
+      console.error('GPT response parsing failed to extract required predictions or checkups:', response);
+      throw new Error('Failed to generate specific predictions and monitoring protocol. Please try again.');
+    }
+
+    // Ensure risk level reflects high dosage concerns
+    const finalRiskLevel = dosageAnalysis.isHighDosage ? 'High' :
+                         dosageAnalysis.assessment === 'REVIEW' ?
+                           Math.max(riskLevel === 'High' ? 2 : riskLevel === 'Moderate' ? 1 : 0, 1) === 2 ? 'High' : 'Moderate'
+                           : riskLevel;
+
+    return {
+      riskLevel: finalRiskLevel,
+      predictions,
+      recommendedCheckUps,
+      alternativeTreatments,
+      symptomsToMonitor,
+      doctorsAdvice: dosageAnalysis.isHighDosage ?
+        `URGENT: High dosage detected. ${doctorsAdvice}` : doctorsAdvice,
+      dosageAssessment: {
         safety: dosageAnalysis.assessment,
         recommendedRange: dosageAnalysis.standardRange,
-        weightBasedAdjustments: dosageAnalysis.weightBasedRange
-      };
+        weightBasedAdjustments: dosageAnalysis.weightBasedRange,
+        reasoning: dosageAnalysis.reasoning
+      },
+      dosageAlerts: dosageAnalysis.isHighDosage ? [
+        '⚠️ URGENT: Dosage exceeds recommended limits',
+        `Daily dose (${dosageAnalysis.dailyDosage}${drugInfo.unit}) may be too high`,
+        `Per kg dose (${dosageAnalysis.dosagePerKg}${drugInfo.unit}/kg) requires review`,
+        'Immediate medical consultation recommended'
+      ] : dosageAnalysis.assessment === 'REVIEW' ? [
+        '⚠️ Dosage needs review',
+        dosageAnalysis.reasoning
+      ] : []
+    };
+  } catch (error) {
+    console.error('GPT Prediction Error:', error);
+    throw error;
+  }
+};
 
-      // Add specific alert if dosage analysis indicates high risk
-      if (dosageAnalysis.assessment.toLowerCase().includes('high risk')) {
-        parsedResult.dosageAlerts.unshift(`⚠️ URGENT: ${dosageAnalysis.reasoning}`);
-        parsedResult.riskLevel = 'High';
-      }
+const processRequest = async (patientInfo, drugInfo) => {
+  try {
+    let lastError;
+    
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        // Validate drug name using Gemini 1.5 Flash
+        if (drugInfo.name) {
+          const drugValidation = await validateDrugInfo(drugInfo.name);
+          if (!drugValidation.isValid) {
+            return {
+              riskLevel: 'Unknown',
+              predictions: [
+                {
+                  name: "Invalid Medication",
+                  likelihood: 0,
+                  description: `This appears to be an invalid medication name: ${drugValidation.explanation}`
+                }
+              ],
+              recommendedCheckUps: ["Consult with your healthcare provider for proper medication information"],
+              alternativeTreatments: [],
+              symptomsToMonitor: [],
+              doctorsAdvice: "Please ensure you're entering a valid medication name as it appears on your prescription.",
+              dosageAssessment: {
+                safety: 'Unknown',
+                recommendedRange: 'Not applicable - Invalid medication',
+                weightBasedAdjustments: 'Not applicable - Invalid medication'
+              },
+              dosageAlerts: ['⚠️ Invalid medication name provided']
+            };
+          }
+        }
 
-      return parsedResult;
+        // Validate medical conditions using Gemini 1.5 Flash
+        if (patientInfo.medicalHistory?.length > 0) {
+          const medicalValidation = await validateMedicalConditions(patientInfo.medicalHistory);
+          if (!medicalValidation.isValid) {
+            return {
+              riskLevel: 'Unknown',
+              predictions: [
+                {
+                  name: "Medical History Needs Review",
+                  likelihood: 0,
+                  description: medicalValidation.explanation || "Some medical conditions need verification"
+                }
+              ],
+              recommendedCheckUps: ["Consult with your healthcare provider to verify your medical conditions"],
+              alternativeTreatments: [
+                {
+                  treatment: "Medical History Review",
+                  description: "Please ensure medical conditions are entered accurately from your health records"
+                }
+              ],
+              symptomsToMonitor: [
+                {
+                  symptom: "Not Available",
+                  description: "Valid medical history is required for proper monitoring guidelines"
+                }
+              ],
+              doctorsAdvice: "Please verify your medical conditions with your healthcare provider or medical records."
+            };
+          }
+        }
 
-    } catch (error) {
-      console.error(`Attempt ${attempt} failed:`, error);
-      lastError = error;
-      
-      if (attempt < MAX_RETRIES) {
-        await delay(RETRY_DELAY * attempt);
-      } else {
+        // Analyze dosage using Gemini
+        const dosageAnalysis = await analyzeDosage(
+          drugInfo.name,
+          parseFloat(drugInfo.dosage),
+          parseInt(drugInfo.duration),
+          parseFloat(patientInfo.weight),
+          drugInfo.unit
+        );
+
+        // Basic validation
+        if (!drugInfo.name) {
+          return {
+            riskLevel: 'Unknown',
+            predictions: [
+              {
+                name: "Drug Information Required",
+                likelihood: 0,
+                description: "Please provide drug name for prediction."
+              }
+            ],
+            recommendedCheckUps: ["Consult with your healthcare provider to verify drug information"],
+            alternativeTreatments: [],
+            symptomsToMonitor: [],
+            doctorsAdvice: "Please provide complete drug information for accurate assessment."
+          };
+        }
+
+        if (!patientInfo.medicalHistory?.length) {
+          return {
+            riskLevel: 'Caution',
+            predictions: [
+              {
+                name: "Limited Medical History",
+                likelihood: 50,
+                description: "Predictions may be less accurate without complete medical history."
+              }
+            ],
+            recommendedCheckUps: [
+              "Complete medical history assessment",
+              "Initial consultation to document medical background"
+            ],
+            alternativeTreatments: [],
+            symptomsToMonitor: [
+              {
+                symptom: "General Health",
+                description: "Monitor any unusual reactions or symptoms"
+              }
+            ],
+            doctorsAdvice: "Please provide your medical history for more accurate assessment."
+          };
+        }
+
+        // Use GPT-3.5 Turbo for the main prediction
+        return await predictWithGPT(patientInfo, drugInfo, dosageAnalysis);
+
+      } catch (error) {
+        console.error(`Attempt ${attempt} failed:`, error);
+        lastError = error;
+        
+        if (attempt < MAX_RETRIES) {
+          await delay(RETRY_DELAY * attempt);
+          continue;
+        }
+        
         return {
           riskLevel: 'Error',
           predictions: [
@@ -508,9 +523,12 @@ const callGoogleAPI = async (patientInfo, drugInfo) => {
         };
       }
     }
+    
+    throw lastError;
+  } catch (error) {
+    console.error('Processing error:', error);
+    throw error;
   }
-  
-  throw lastError;
 };
 
 import multer from 'multer';
@@ -558,7 +576,7 @@ predictRouter.post('/', async (req, res) => {
   console.log('Request body:', req.body);
   try {
     const { patientInfo, drugInfo } = req.body;
-    const predictionResult = await callGoogleAPI(patientInfo, drugInfo);
+    const predictionResult = await processRequest(patientInfo, drugInfo);
     
     const prediction = new Prediction({
       patientInfo,

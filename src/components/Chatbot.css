@@ -271,12 +271,48 @@
 }
 
 .chatbot-input {
-  display: flex;
   padding: 20px 24px;
   background-color: white;
   border-top: 1px solid #e9ecef;
   border-bottom-left-radius: 16px;
   border-bottom-right-radius: 16px;
+}
+
+.input-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.image-upload-button {
+  padding: 12px !important;
+  border-radius: 50% !important;
+  min-width: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #e9ecef !important;
+  color: #495057 !important;
+  font-size: 20px !important;
+  transition: all 0.2s;
+}
+
+.image-upload-button:hover {
+  background-color: #dee2e6 !important;
+  color: #212529 !important;
+}
+
+.message-image {
+  margin-bottom: 8px;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.message-image img {
+  display: block;
+  max-width: 200px;
+  border-radius: 8px;
 }
 
 .chatbot-input input {
