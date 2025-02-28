@@ -2,6 +2,7 @@ import React from 'react';
 import { ArrowRight, Shield, Brain, Heart, BarChart as ChartBar } from 'lucide-react';
 import { motion } from 'framer-motion';
 import Chatbot from '../components/Chatbot';
+import heroBackground from '../assets/hero background.jpg';
 
 interface HomePageProps {
   onStartPredict: () => void;
@@ -9,7 +10,7 @@ interface HomePageProps {
 
 const HomePage: React.FC<HomePageProps> = ({ onStartPredict }) => {
   return (
-    <div className="min-h-screen bg-cover bg-center bg-no-repeat bg-fixed" style={{ backgroundImage: "url('/src/assets/hero background.jpg')" }}>
+    <div className="min-h-screen bg-cover bg-center bg-no-repeat bg-fixed" style={{ backgroundImage: `url(${heroBackground})` }}>
       {/* Hero Section */}
       <section className="relative overflow-hidden">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-24 lg:py-32">
