@@ -1,4 +1,4 @@
- import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import './Chatbot.css';
 import { X } from 'lucide-react';
 import chatbotIcon from '../assets/chatbot icon.png';
@@ -6,8 +6,6 @@ import chatbotIcon from '../assets/chatbot icon.png';
 interface Message {
   text: string;
   isBot: boolean;
-  type?: 'text' | 'image';  // Added to distinguish between text and image messages
-  imageUrl?: string;        // Added to store image URLs
 }
 
 const Chatbot: React.FC = () => {
@@ -17,9 +15,7 @@ const Chatbot: React.FC = () => {
   const [showWelcomeBubble, setShowWelcomeBubble] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [sessionId] = useState<string>(() => `session_${Date.now()}`);
-  const [selectedImage, setSelectedImage] = useState<File | null>(null);
   const latestBotMessageRef = React.useRef<HTMLDivElement>(null);
-  const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (messages.length > 0 && messages[messages.length - 1].isBot) {
@@ -40,19 +36,17 @@ const Chatbot: React.FC = () => {
     return () => clearTimeout(welcomeTimer);
   }, []);
 
-  const getAIResponse = async (message: string, image?: File | null): Promise<string> => {
+  const getAIResponse = async (message: string): Promise<string> => {
     try {
-      const formData = new FormData();
-      formData.append('sessionId', sessionId);
-      formData.append('message', message);
-      
-      if (image) {
-        formData.append('image', image);
-      }
-
       const response = await fetch('http://localhost:5000/api/chat', {
         method: 'POST',
-        body: formData,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          sessionId,
+          message,
+        }),
       });
 
       if (!response.ok) {
@@ -65,23 +59,6 @@ const Chatbot: React.FC = () => {
       console.error('Error getting AI response:', error);
       return "I apologize, but I'm having trouble processing your request at the moment. Please try again.";
     }
-  };
-
-  const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) {
-      if (!file.type.startsWith('image/')) {
-        alert('Please upload an image file');
-        return;
-      }
-      setSelectedImage(file);
-      // Add visual feedback that image was selected
-      setInput(`Uploaded image: ${file.name}`);
-    }
-  };
-
-  const handleImageClick = () => {
-    fileInputRef.current?.click();
   };
 
   const handleQuestionClick = async (question: string) => {
@@ -98,37 +75,19 @@ const Chatbot: React.FC = () => {
   };
 
   const handleSend = async () => {
-    if (input.trim() || selectedImage) {
+    if (input.trim()) {
       const userMessage = input.trim();
-      let userMessageObj: Message = { text: userMessage, isBot: false, type: 'text' };
-      
-      if (selectedImage) {
-        const imageUrl = URL.createObjectURL(selectedImage);
-        userMessageObj = {
-          ...userMessageObj,
-          type: 'image',
-          imageUrl,
-          text: userMessage || 'Image uploaded'
-        };
-      }
-
-      setMessages([...messages, userMessageObj]);
+      setMessages([...messages, { text: userMessage, isBot: false }]);
       setInput('');
       setIsLoading(true);
 
-      const response = await getAIResponse(userMessage, selectedImage);
-      setSelectedImage(null);
+      const response = await getAIResponse(userMessage);
       
       setIsLoading(false);
       setMessages(prev => [...prev, {
         text: response,
-        isBot: true,
-        type: 'text'
+        isBot: true
       }]);
-
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
     }
   };
 
@@ -228,11 +187,6 @@ const Chatbot: React.FC = () => {
                     className={`chatbot-message ${msg.isBot ? 'bot' : 'user'}`}
                     role={msg.isBot ? 'status' : 'comment'}
                   >
-                    {msg.type === 'image' && msg.imageUrl && (
-                      <div className="message-image">
-                        <img src={msg.imageUrl} alt="Uploaded content" style={{ maxWidth: '200px', marginBottom: '8px' }} />
-                      </div>
-                    )}
                     {msg.text}
                   </div>
                 ))}
@@ -254,22 +208,6 @@ const Chatbot: React.FC = () => {
                   aria-label="Type your message"
                   disabled={isLoading}
                 />
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  onChange={handleImageUpload}
-                  accept="image/*"
-                  style={{ display: 'none' }}
-                  aria-label="Upload image"
-                />
-                <button
-                  onClick={handleImageClick}
-                  className="image-upload-button"
-                  aria-label="Upload image"
-                  disabled={isLoading}
-                >
-                  📷
-                </button>
                 <button
                   onClick={handleSend}
                   aria-label="Send message"

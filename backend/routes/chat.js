@@ -1,14 +1,10 @@
 import express from 'express';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import dotenv from 'dotenv';
-import multer from 'multer';
-import fs from 'fs';
 
 dotenv.config();
 
 const router = express.Router();
-const upload = multer();
-
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 const SYSTEM_PROMPT = `You are ADR Predict's AI assistant. Your role is to explain ADR Predict's capabilities and features, NOT to provide medical advice.
@@ -36,25 +32,10 @@ Maintain a professional tone and always clarify that ADR Predict is a tool for h
 // Store chat instances for each session
 const chatSessions = new Map();
 
-router.post('/', upload.single('image'), async (req, res) => {
+router.post('/', async (req, res) => {
   try {
     const { message, sessionId = 'default' } = req.body;
-    const image = req.file;
-
-    // Create initial message parts with the text
-    const messageParts = [{ text: message || '' }];
-
-    // If an image is uploaded, add it to the message parts
-    if (image) {
-      messageParts.push({
-        inlineData: {
-          data: image.buffer.toString('base64'),
-          mimeType: image.mimetype
-        }
-      });
-    }
-
-    // Use Gemini 1.5 Flash for both text and image processing
+    
     const model = genAI.getGenerativeModel({
       model: "gemini-1.5-flash",
       generationConfig: {
@@ -65,22 +46,11 @@ router.post('/', upload.single('image'), async (req, res) => {
       },
     });
 
-    // Add system prompt to message parts
-    messageParts.unshift({ text: SYSTEM_PROMPT + "\n\n" });
-
-    // For images, add specific guidance
-    if (image) {
-      messageParts.unshift({
-        text: "When analyzing images related to medications or medical documents, focus on:\n" +
-              "1. Identifying visible drug names or medical terms\n" +
-              "2. Describing how ADR Predict can help analyze such medications\n" +
-              "3. Emphasizing that final interpretations should be done by healthcare providers\n" +
-              "4. NOT providing specific medical advice about the medication\n\n"
-      });
-    }
-
-    // Generate response
-    const result = await model.generateContent(messageParts);
+    // Generate response with system prompt
+    const result = await model.generateContent([
+      { text: SYSTEM_PROMPT + "\n\n" },
+      { text: message || '' }
+    ]);
     const response = result.response;
 
     if (!response || !response.text()) {
