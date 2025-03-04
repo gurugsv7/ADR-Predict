@@ -2,8 +2,17 @@ import express from 'express';
 import { Prediction } from '../models/Prediction.js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import dotenv from 'dotenv';
+import multer from 'multer';
 
 dotenv.config();
+
+// Validate required environment variables
+const requiredEnvVars = ['GEMINI_API_KEY', 'GEMINI_PREDICT_API_KEY'];
+for (const envVar of requiredEnvVars) {
+  if (!process.env[envVar]) {
+    throw new Error(`Missing required environment variable: ${envVar}`);
+  }
+}
 
 export const predictRouter = express.Router();
 
@@ -74,7 +83,7 @@ const validateDrugInfo = async (drugName) => {
     const noteMatch = text.match(/NOTE:\s*(.+?)(?=\n|$)/i);
     
     const isValid = matchResult?.[1]?.toLowerCase() === 'yes' && 
-                   typeResult?.[1]?.toLowerCase() === 'compound';
+                    typeResult?.[1]?.toLowerCase() === 'compound';
     
     return {
       isValid,
@@ -477,7 +486,6 @@ const processRequest = async (patientInfo, drugInfo) => {
   }
 };
 
-import multer from 'multer';
 const upload = multer();
 
 // Extract text from medicine image using Gemini Vision API
@@ -519,9 +527,16 @@ predictRouter.post('/extract-text', upload.single('image'), async (req, res) => 
 });
 
 predictRouter.post('/', async (req, res) => {
-  console.log('Request body:', req.body);
   try {
     const { patientInfo, drugInfo } = req.body;
+    
+    if (!patientInfo || !drugInfo) {
+      return res.status(400).json({ 
+        error: 'Missing required data',
+        details: 'Both patientInfo and drugInfo are required'
+      });
+    }
+
     const predictionResult = await processRequest(patientInfo, drugInfo);
     
     const prediction = new Prediction({
@@ -534,6 +549,9 @@ predictRouter.post('/', async (req, res) => {
     res.json(predictionResult);
   } catch (error) {
     console.error('Prediction error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ 
+      error: 'Prediction failed',
+      message: process.env.NODE_ENV === 'development' ? error.message : 'An unexpected error occurred'
+    });
   }
 });
