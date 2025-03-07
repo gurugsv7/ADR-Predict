@@ -1,87 +1,135 @@
 import express from 'express';
 import cors from 'cors';
-import mongoose from 'mongoose';
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
 import { predictRouter } from './routes/predict.js';
 import chatRouter from './routes/chat.js';
+import { supabase } from './config/supabase.js';
 
-dotenv.config();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Load environment variables from root directory
+console.log('Loading environment variables...');
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
+
+console.log('Environment check:', {
+  hasSupabaseUrl: !!process.env.SUPABASE_URL,
+  hasSupabaseKey: !!process.env.SUPABASE_ANON_KEY,
+  port: process.env.PORT
+});
 
 const app = express();
-const PORT = process.env.PORT || 5000;
-const CHAT_PORT = process.env.CHAT_PORT || 5001; // Separate port for chat
+const port = process.env.PORT || 5000;
+
+// CORS configuration
+const corsOptions = {
+  origin: [
+    'http://localhost:5173',                 // Local development
+    'https://adr-predict.vercel.app',        // Vercel production
+    /\.vercel\.app$/,                        // Any Vercel preview deployments
+  ],
+  methods: ['GET', 'POST'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,
+  maxAge: 86400 // 24 hours
+};
 
 // Middleware
-app.use(cors());
+app.use(cors(corsOptions));
 app.use(express.json());
+
+// Test Supabase connection
+const testConnection = async () => {
+  try {
+    console.log('Testing Supabase connection...');
+    console.log('Supabase URL:', process.env.SUPABASE_URL);
+    
+    const { data, error } = await supabase
+      .from('predictions')
+      .select('id')
+      .limit(1);
+
+    if (error) {
+      console.error('Supabase connection error:', error);
+      throw error;
+    }
+    
+    console.log('✅ Successfully connected to Supabase');
+    console.log('Database tables:');
+    console.log('- predictions');
+    console.log('- chats');
+  } catch (error) {
+    console.error('❌ Error connecting to Supabase:', error);
+    process.exit(1);
+  }
+};
+
+// Routes
+app.use('/api/predict', predictRouter);
+app.use('/api/chat', chatRouter);
+
+// Health check endpoint
+app.get('/health', async (req, res) => {
+  try {
+    const { error } = await supabase
+      .from('predictions')
+      .select('id')
+      .limit(1);
+
+    if (error) throw error;
+    
+    res.json({
+      status: 'ok',
+      database: 'connected',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Health check error:', error);
+    res.status(503).json({
+      status: 'error',
+      message: 'Database connection issue',
+      timestamp: new Date().toISOString()
+    });
+  }
+});
 
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Server error:', err);
-  res.status(500).json({ error: 'Internal server error' });
+  res.status(500).json({
+    error: 'Server error',
+    message: process.env.NODE_ENV === 'development' ? err.message : 'An unexpected error occurred'
+  });
 });
 
-// Routes with error handling
-app.use('/api/predict', (req, res, next) => {
+// Start server
+const startServer = async () => {
+  console.log('Starting server...');
   try {
-    predictRouter(req, res, next);
+    await testConnection();
+    app.listen(port, () => {
+      console.log(`
+🚀 Server is running on port ${port}
+📝 API endpoints:
+   - POST /api/predict
+   - POST /api/chat
+   - GET /health
+      `);
+    });
   } catch (error) {
-    next(error);
-  }
-});
-
-app.use('/api/chat', (req, res, next) => {
-  try {
-    chatRouter(req, res, next);
-  } catch (error) {
-    next(error);
-  }
-});
-
-// MongoDB Connection with retry logic
-const connectDB = async (retries = 5) => {
-  try {
-    await mongoose.connect('mongodb+srv://gurugsv777:guruhari713@adrpredict.bwhks.mongodb.net/adr-prediction?retryWrites=true&w=majority&appName=adrpredict');
-    console.log('MongoDB connected successfully');
-  } catch (err) {
-    if (retries > 0) {
-      console.log(`MongoDB connection retry (${retries} attempts remaining)...`);
-      setTimeout(() => connectDB(retries - 1), 5000);
-    } else {
-      console.error('MongoDB connection failed:', err);
-      process.exit(1);
-    }
+    console.error('Failed to start server:', error);
+    process.exit(1);
   }
 };
 
-// Start server only after DB connection
-connectDB().then(() => {
-  app.listen(PORT, () => {
-    console.log(`Main server running on port ${PORT}`);
-  });
+// Catch any unhandled promise rejections
+process.on('unhandledRejection', (error) => {
+  console.error('Unhandled promise rejection:', error);
+  process.exit(1);
 });
 
-// Create separate server for chat if needed
-if (process.env.SEPARATE_CHAT_SERVER === 'true') {
-  const chatApp = express();
-  chatApp.use(cors());
-  chatApp.use(express.json());
-  chatApp.use('/api/chat', chatRouter);
-  
-  chatApp.listen(CHAT_PORT, () => {
-    console.log(`Chat server running on port ${CHAT_PORT}`);
-  });
-}
-
-// Handle process termination gracefully
-process.on('SIGTERM', () => {
-  console.log('Received SIGTERM. Performing graceful shutdown...');
-  mongoose.connection.close();
-  process.exit(0);
-});
-
-process.on('SIGINT', () => {
-  console.log('Received SIGINT. Performing graceful shutdown...');
-  mongoose.connection.close();
-  process.exit(0);
-});
+console.log('Initializing server...');
+startServer();

@@ -1,5 +1,5 @@
 import express from 'express';
-import { Prediction } from '../models/Prediction.js';
+import { supabase } from '../config/supabase.js';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import dotenv from 'dotenv';
 import multer from 'multer';
@@ -539,13 +539,21 @@ predictRouter.post('/', async (req, res) => {
 
     const predictionResult = await processRequest(patientInfo, drugInfo);
     
-    const prediction = new Prediction({
-      patientInfo,
-      drugInfo,
-      prediction: predictionResult
-    });
-    
-    await prediction.save();
+    // Store prediction in Supabase
+    const { data, error } = await supabase
+      .from('predictions')
+      .insert([{
+        patient_info: patientInfo,
+        drug_info: drugInfo,
+        prediction: predictionResult
+      }])
+      .select();
+
+    if (error) {
+      console.error('Supabase insertion error:', error);
+      throw error;
+    }
+
     res.json(predictionResult);
   } catch (error) {
     console.error('Prediction error:', error);

@@ -1,6 +1,7 @@
 import express from 'express';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import dotenv from 'dotenv';
+import { supabase } from '../config/supabase.js';
 
 dotenv.config();
 
@@ -34,19 +35,35 @@ Key information about ADR Predict:
 
 Maintain a professional tone and always clarify that ADR Predict is a tool for healthcare providers to use in their decision-making process.`;
 
-// Store chat instances for each session with TTL
-const chatSessions = new Map();
+// Rate limiting configuration
+const SESSION_LIMIT = 50; // messages per session
 const SESSION_TTL = 30 * 60 * 1000; // 30 minutes
 
-// Clean up expired sessions periodically
-setInterval(() => {
-  const now = Date.now();
-  for (const [sessionId, session] of chatSessions) {
-    if (now - session.lastAccess > SESSION_TTL) {
-      chatSessions.delete(sessionId);
-    }
+// Helper function to check rate limit for a session
+const checkRateLimit = async (sessionId) => {
+  const { count } = await supabase
+    .from('chats')
+    .select('*', { count: 'exact' })
+    .eq('session_id', sessionId)
+    .gte('created_at', new Date(Date.now() - SESSION_TTL).toISOString());
+
+  return count < SESSION_LIMIT;
+};
+
+// Helper function to clean up old sessions
+const cleanupOldSessions = async () => {
+  const { error } = await supabase
+    .from('chats')
+    .delete()
+    .lt('created_at', new Date(Date.now() - SESSION_TTL).toISOString());
+
+  if (error) {
+    console.error('Error cleaning up old sessions:', error);
   }
-}, 5 * 60 * 1000); // Clean up every 5 minutes
+};
+
+// Run cleanup every 5 minutes
+setInterval(cleanupOldSessions, 5 * 60 * 1000);
 
 router.post('/', async (req, res) => {
   try {
@@ -60,26 +77,15 @@ router.post('/', async (req, res) => {
       });
     }
 
-    // Update session last access time
-    if (chatSessions.has(sessionId)) {
-      chatSessions.get(sessionId).lastAccess = Date.now();
-    } else {
-      chatSessions.set(sessionId, {
-        lastAccess: Date.now(),
-        messageCount: 0
-      });
-    }
-
-    // Rate limiting
-    const session = chatSessions.get(sessionId);
-    session.messageCount++;
-    if (session.messageCount > 50) { // 50 messages per session limit
+    // Check rate limit
+    const withinLimit = await checkRateLimit(sessionId);
+    if (!withinLimit) {
       return res.status(429).json({
         error: 'Rate limit exceeded',
         details: 'Please start a new session'
       });
     }
-    
+
     const model = genAI.getGenerativeModel({
       model: "gemini-1.5-flash",
       generationConfig: {
@@ -109,6 +115,19 @@ router.post('/', async (req, res) => {
         error: 'Invalid response',
         message: 'Our AI assistant cannot provide medical advice. Please consult with your healthcare provider.'
       });
+    }
+
+    // Store chat message in Supabase
+    const { error: insertError } = await supabase
+      .from('chats')
+      .insert({
+        session_id: sessionId,
+        user_message: message,
+        bot_response: responseText
+      });
+
+    if (insertError) {
+      console.error('Error storing chat message:', insertError);
     }
 
     res.json({
@@ -142,12 +161,55 @@ router.post('/', async (req, res) => {
   }
 });
 
+// Get chat history for a session
+router.get('/history/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    
+    const { data, error } = await supabase
+      .from('chats')
+      .select('*')
+      .eq('session_id', sessionId)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      throw error;
+    }
+
+    res.json({ history: data });
+  } catch (error) {
+    console.error('Error fetching chat history:', error);
+    res.status(500).json({
+      error: 'Failed to fetch chat history',
+      message: process.env.NODE_ENV === 'development' ? error.message : 'An unexpected error occurred'
+    });
+  }
+});
+
 // Health check endpoint
-router.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok',
-    activeSessions: chatSessions.size
-  });
+router.get('/health', async (req, res) => {
+  try {
+    // Get count of active sessions in last 30 minutes
+    const { count, error } = await supabase
+      .from('chats')
+      .select('session_id', { count: 'exact', distinct: true })
+      .gte('created_at', new Date(Date.now() - SESSION_TTL).toISOString());
+
+    if (error) {
+      throw error;
+    }
+
+    res.json({ 
+      status: 'ok',
+      activeSessions: count || 0
+    });
+  } catch (error) {
+    console.error('Health check error:', error);
+    res.status(500).json({ 
+      status: 'error',
+      message: 'Failed to fetch active sessions'
+    });
+  }
 });
 
 export default router;
