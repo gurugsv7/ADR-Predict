@@ -27,19 +27,33 @@ const port = process.env.PORT || 5000;
 // CORS configuration
 const corsOptions = {
   origin: [
-    'http://localhost:5173',                 // Local development
-    'https://adr-predict.vercel.app',        // Vercel production
-    /\.vercel\.app$/,                        // Any Vercel preview deployments
+    'http://localhost:5173',
+    'https://adr-predict.vercel.app',
+    /\.vercel\.app$/
   ],
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
-  maxAge: 86400 // 24 hours
+  maxAge: 86400
 };
 
 // Middleware
 app.use(cors(corsOptions));
 app.use(express.json());
+
+// Root route handler
+app.get('/', (req, res) => {
+  res.json({
+    name: 'ADR-Predict Backend API',
+    version: '1.0.0',
+    endpoints: [
+      { path: '/health', method: 'GET', description: 'Health check endpoint' },
+      { path: '/api/predict', method: 'POST', description: 'Get ADR predictions' },
+      { path: '/api/chat', method: 'POST', description: 'Chat with AI assistant' }
+    ],
+    status: 'running'
+  });
+});
 
 // Test Supabase connection
 const testConnection = async () => {
@@ -105,6 +119,14 @@ app.use((err, req, res, next) => {
   });
 });
 
+// Handle 404
+app.use((req, res) => {
+  res.status(404).json({
+    error: 'Not Found',
+    message: `Cannot ${req.method} ${req.url}`
+  });
+});
+
 // Start server
 const startServer = async () => {
   console.log('Starting server...');
@@ -117,6 +139,7 @@ const startServer = async () => {
    - POST /api/predict
    - POST /api/chat
    - GET /health
+   - GET /
       `);
     });
   } catch (error) {
